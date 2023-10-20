@@ -7,13 +7,14 @@ use std::env;
 
 #[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
-    if !encoded_value.is_empty() {
-        match encoded_value.chars().next().unwrap() {
+    let mut input_string = encoded_value;
+    if !input_string.is_empty() {
+        match input_string.chars().next().unwrap() {
             '0'..='9' =>
             // Strings are encoded as <length>:<contents>.
             // Example: "5:hello" -> "hello"
             {
-                if let Some((len, rest)) = encoded_value.split_once(':') {
+                if let Some((len, rest)) = input_string.split_once(':') {
                     if let Ok(len) = len
                         .parse::<usize>()
                         .context("Failed to parse string length")
@@ -27,12 +28,26 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
             // Integers are encoded as i<number>e
             // Example: "i-5e" -> -5
             {
-                if let Some((numb, rest)) = encoded_value[1..].split_once('e') {
+                if let Some((numb, rest)) = input_string[1..].split_once('e') {
                     if let Ok(numb) = numb.parse::<i64>().context("Failed to parse integer") {
                         return (numb.into(), rest);
                     }
                 }
             }
+            'l' =>
+            // Lists are encoded as l<bencoded_elements>e.
+            // Example: "l5:helloi52ee" -> ["hello", 52]
+            {
+                input_string = &input_string[1..];
+                let mut list = Vec::new();
+                while input_string.chars().next().unwrap() != 'e' {
+                    let (list_value, rest) = decode_bencoded_value(input_string);
+                    list.push(list_value);
+                    input_string = rest;
+                }
+                return (list.into(), &input_string[1..]);
+            }
+
             _ => {}
         }
     }
