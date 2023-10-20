@@ -10,7 +10,7 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
     if !encoded_value.is_empty() {
         match encoded_value.chars().next().unwrap() {
             '0'..='9' =>
-            // If encoded_value starts with a digit, it's a string
+            // Strings are encoded as <length>:<contents>.
             // Example: "5:hello" -> "hello"
             {
                 if let Some((len, rest)) = encoded_value.split_once(':') {
@@ -20,6 +20,16 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                     {
                         let (string, rest) = rest.split_at(len);
                         return (string.into(), rest);
+                    }
+                }
+            }
+            'i' =>
+            // Integers are encoded as i<number>e
+            // Example: "i-5e" -> -5
+            {
+                if let Some((numb, rest)) = encoded_value[1..].split_once('e') {
+                    if let Ok(numb) = numb.parse::<i64>().context("Failed to parse integer") {
+                        return (numb.into(), rest);
                     }
                 }
             }
