@@ -5,7 +5,6 @@ use std::env;
 // Available if you need it!
 // use serde_bencode
 
-#[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
     let mut input_string = encoded_value;
     if !input_string.is_empty() {
@@ -46,6 +45,24 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
                     input_string = rest;
                 }
                 return (list.into(), &input_string[1..]);
+            }
+            'd' =>
+            //Dictionary is encoded as d<key1><value1>...<keyN><valueN>e.
+            // <key1>, <value1> etc. correspond to the bencoded keys & values.
+            // The keys are sorted in lexicographical order and must be strings
+            // Example: "d3:foo3:bar5:helloi52ee" -> {"hello": 52, "foo":"bar"}
+            {
+                input_string = &input_string[1..];
+                let mut dict = serde_json::Map::new();
+                while input_string.chars().next().unwrap() != 'e' {
+                    let (key, rest) = decode_bencoded_value(input_string);
+                    let (value, rest) = decode_bencoded_value(rest);
+                    if let Some(s) = key.as_str() {
+                        dict.insert(s.into(), value);
+                    }
+                    input_string = rest;
+                }
+                return (dict.into(), &input_string[1..]);
             }
 
             _ => {}
