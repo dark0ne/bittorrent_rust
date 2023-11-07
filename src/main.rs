@@ -1,4 +1,6 @@
-use std::{env, fs, path::PathBuf};
+use hex;
+use sha1::{Digest, Sha1};
+use std::{env, fs, hash, path::PathBuf};
 
 #[derive(Debug, serde::Deserialize)]
 struct Torrent {
@@ -7,7 +9,7 @@ struct Torrent {
     info: Info,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct Info {
     length: usize,
 
@@ -130,8 +132,16 @@ fn main() {
         let contents = fs::read(file_name).expect("Could not read file");
         let torrent: Torrent =
             serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize");
+
+        let info_ser = serde_bencode::to_bytes(&torrent.info).expect("Could not serialize");
+
+        let mut hasher = Sha1::new();
+        hasher.update(info_ser);
+        let info_hash = hasher.finalize();
+
         println!("Tracker URL: {}", torrent.announce);
         println!("Length: {}", torrent.info.length);
+        println!("Info Hash: {}", hex::encode(info_hash));
     } else {
         println!("unknown command: {}", args[1])
     }
