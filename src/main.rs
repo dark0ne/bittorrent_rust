@@ -1,10 +1,28 @@
-use anyhow::Context;
-use serde_json;
-use std::env;
+use std::{env, fs, path::PathBuf};
+
+#[derive(Debug, serde::Deserialize)]
+struct Torrent {
+    announce: String,
+
+    info: Info,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Info {
+    length: usize,
+
+    name: String,
+
+    #[serde(rename = "piece length")]
+    piece_length: usize,
+
+    #[serde(with = "serde_bytes")]
+    pieces: Vec<u8>,
+}
 
 // Available if you need it!
 // use serde_bencode
-
+/*
 fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
     let mut input_string = encoded_value;
     if !input_string.is_empty() {
@@ -70,6 +88,31 @@ fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
     }
     panic!("Unhandled encoded value: {}", encoded_value)
 }
+ */
+
+fn bencode_to_serde(value: serde_bencode::value::Value) -> serde_json::Value {
+    match value {
+        serde_bencode::value::Value::Bytes(bytes) => {
+            serde_json::Value::String(String::from_utf8_lossy(bytes.as_slice()).to_string())
+        }
+        serde_bencode::value::Value::Int(int) => {
+            serde_json::Value::Number(serde_json::value::Number::from(int))
+        }
+        serde_bencode::value::Value::List(list) => {
+            serde_json::Value::Array(list.into_iter().map(|el| bencode_to_serde(el)).collect())
+        }
+        serde_bencode::value::Value::Dict(dict) => serde_json::Value::Object(
+            dict.into_iter()
+                .map(|el| {
+                    (
+                        String::from_utf8_lossy(el.0.as_slice()).to_string(),
+                        bencode_to_serde(el.1),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
 fn main() {
@@ -78,8 +121,17 @@ fn main() {
 
     if command == "decode" {
         let encoded_value = &args[2];
-        let decoded_value = decode_bencoded_value(encoded_value);
-        println!("{}", decoded_value.0.to_string());
+        //let decoded_value = decode_bencoded_value(encoded_value);
+        let decoded_value =
+            serde_bencode::from_str(&encoded_value).expect("cannot decode bencoded string");
+        println!("{}", bencode_to_serde(decoded_value).to_string());
+    } else if command == "info" {
+        let file_name = PathBuf::from(args[2].clone());
+        let contents = fs::read(file_name).expect("Could not read file");
+        let torrent: Torrent =
+            serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize");
+        println!("Tracker URL: {}", torrent.announce);
+        println!("Length: {}", torrent.info.length);
     } else {
         println!("unknown command: {}", args[1])
     }
