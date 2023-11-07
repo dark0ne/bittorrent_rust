@@ -1,6 +1,10 @@
 use hex;
+use reqwest;
 use sha1::{Digest, Sha1};
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 mod serialize;
 
@@ -27,6 +31,16 @@ struct Info {
 #[derive(Debug)]
 struct Hashes {
     data: Vec<[u8; 20]>,
+}
+
+impl Info {
+    pub fn calc_hash(&self) -> [u8; 20] {
+        let info_ser = serde_bencode::to_bytes(self).expect("Could not serialize");
+        let mut hasher = Sha1::new();
+        hasher.update(info_ser);
+        let info_hash = hasher.finalize();
+        info_hash.into()
+    }
 }
 
 // Available if you need it!
@@ -135,20 +149,13 @@ fn main() {
             serde_bencode::from_str(&encoded_value).expect("cannot decode bencoded string");
         println!("{}", bencode_to_serde(decoded_value).to_string());
     } else if command == "info" {
-        let file_name = PathBuf::from(args[2].clone());
-        let contents = fs::read(file_name).expect("Could not read file");
-        let torrent: Torrent =
-            serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize");
+        let torrent: Torrent = read_torrent(&args[2]);
 
-        let info_ser = serde_bencode::to_bytes(&torrent.info).expect("Could not serialize");
+        //        println!("{}", unsafe {
+        //            String::from_utf8_unchecked(info_ser.clone())
+        //        });
 
-        println!("{}", unsafe {
-            String::from_utf8_unchecked(info_ser.clone())
-        });
-
-        let mut hasher = Sha1::new();
-        hasher.update(info_ser);
-        let info_hash = hasher.finalize();
+        let info_hash = torrent.info.calc_hash();
 
         println!("Tracker URL: {}", torrent.announce);
         println!("Length: {}", torrent.info.length);
@@ -161,4 +168,12 @@ fn main() {
     } else {
         println!("unknown command: {}", args[1])
     }
+}
+
+fn read_torrent<P>(path: P) -> Torrent
+where
+    P: AsRef<Path>,
+{
+    let contents = fs::read(path).expect("Could not read file");
+    serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize")
 }
