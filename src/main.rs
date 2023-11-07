@@ -1,6 +1,8 @@
 use hex;
 use sha1::{Digest, Sha1};
-use std::{env, fs, hash, path::PathBuf};
+use std::{env, fs, path::PathBuf};
+
+mod serialize;
 
 #[derive(Debug, serde::Deserialize)]
 struct Torrent {
@@ -18,8 +20,13 @@ struct Info {
     #[serde(rename = "piece length")]
     piece_length: usize,
 
-    #[serde(with = "serde_bytes")]
-    pieces: Vec<u8>,
+    //#[serde(with = "serde_bytes")]
+    pieces: Hashes,
+}
+
+#[derive(Debug)]
+struct Hashes {
+    data: Vec<[u8; 20]>,
 }
 
 // Available if you need it!
@@ -135,6 +142,10 @@ fn main() {
 
         let info_ser = serde_bencode::to_bytes(&torrent.info).expect("Could not serialize");
 
+        println!("{}", unsafe {
+            String::from_utf8_unchecked(info_ser.clone())
+        });
+
         let mut hasher = Sha1::new();
         hasher.update(info_ser);
         let info_hash = hasher.finalize();
@@ -142,6 +153,11 @@ fn main() {
         println!("Tracker URL: {}", torrent.announce);
         println!("Length: {}", torrent.info.length);
         println!("Info Hash: {}", hex::encode(info_hash));
+        println!("Piece Length: {}", torrent.info.piece_length);
+        println!("Piece Hashes:");
+        for h in torrent.info.pieces.data {
+            println!("{}", hex::encode(h));
+        }
     } else {
         println!("unknown command: {}", args[1])
     }
