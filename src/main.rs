@@ -1,10 +1,7 @@
 use hex;
 use reqwest;
 use sha1::{Digest, Sha1};
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::{env, fs, path::Path, str::FromStr};
 
 mod serialize;
 
@@ -41,6 +38,86 @@ impl Info {
         let info_hash = hasher.finalize();
         info_hash.into()
     }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PeerRequest {
+    //#[serde(with = "serde_bytes")]
+    info_hash: SingleHash,
+    peer_id: String,
+    port: u32,
+    uploaded: usize,
+    downloaded: usize,
+    left: usize,
+    compact: u8,
+}
+#[derive(Debug)]
+struct SingleHash([u8; 20]);
+
+// Usage: your_bittorrent.sh decode "<encoded_value>"
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let command = &args[1];
+
+    if command == "decode" {
+        let encoded_value = &args[2];
+        //let decoded_value = decode_bencoded_value(encoded_value);
+        let decoded_value =
+            serde_bencode::from_str(&encoded_value).expect("cannot decode bencoded string");
+        println!("{}", bencode_to_serde(decoded_value).to_string());
+    } else if command == "info" {
+        let torrent: Torrent = read_torrent(&args[2]);
+
+        //        println!("{}", unsafe {
+        //            String::from_utf8_unchecked(info_ser.clone())
+        //        });
+
+        let info_hash = torrent.info.calc_hash();
+
+        println!("Tracker URL: {}", torrent.announce);
+        println!("Length: {}", torrent.info.length);
+        println!("Info Hash: {}", hex::encode(info_hash));
+        println!("Piece Length: {}", torrent.info.piece_length);
+        println!("Piece Hashes:");
+        for h in torrent.info.pieces.data {
+            println!("{}", hex::encode(h));
+        }
+    } else if command == "peers" {
+        let torrent: Torrent = read_torrent(&args[2]);
+        let request = PeerRequest {
+            info_hash: SingleHash(torrent.info.calc_hash()),
+            peer_id: "00112233445566778899".to_string(),
+            port: 6881,
+            uploaded: 0,
+            downloaded: 0,
+            left: torrent.info.length,
+            compact: 1,
+        };
+        let params = serde_urlencoded::to_string(request).expect("url encode failed");
+
+        let full_url = format!("{}?{}", torrent.announce, params);
+
+        let url = reqwest::Url::from_str(&full_url).unwrap();
+        //url.set_query(Some(params.as_str()));
+
+        println!("url: {}", url);
+
+        //let response = reqwest::blocking::get(url)
+        //    .expect("GET for peers failed")
+        //    .text()
+        //    .unwrap();
+        //println!("response: {}", response);
+    } else {
+        println!("unknown command: {}", args[1])
+    }
+}
+
+fn read_torrent<P>(path: P) -> Torrent
+where
+    P: AsRef<Path>,
+{
+    let contents = fs::read(path).expect("Could not read file");
+    serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize")
 }
 
 // Available if you need it!
@@ -135,45 +212,4 @@ fn bencode_to_serde(value: serde_bencode::value::Value) -> serde_json::Value {
                 .collect(),
         ),
     }
-}
-
-// Usage: your_bittorrent.sh decode "<encoded_value>"
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let command = &args[1];
-
-    if command == "decode" {
-        let encoded_value = &args[2];
-        //let decoded_value = decode_bencoded_value(encoded_value);
-        let decoded_value =
-            serde_bencode::from_str(&encoded_value).expect("cannot decode bencoded string");
-        println!("{}", bencode_to_serde(decoded_value).to_string());
-    } else if command == "info" {
-        let torrent: Torrent = read_torrent(&args[2]);
-
-        //        println!("{}", unsafe {
-        //            String::from_utf8_unchecked(info_ser.clone())
-        //        });
-
-        let info_hash = torrent.info.calc_hash();
-
-        println!("Tracker URL: {}", torrent.announce);
-        println!("Length: {}", torrent.info.length);
-        println!("Info Hash: {}", hex::encode(info_hash));
-        println!("Piece Length: {}", torrent.info.piece_length);
-        println!("Piece Hashes:");
-        for h in torrent.info.pieces.data {
-            println!("{}", hex::encode(h));
-        }
-    } else {
-        println!("unknown command: {}", args[1])
-    }
-}
-
-fn read_torrent<P>(path: P) -> Torrent
-where
-    P: AsRef<Path>,
-{
-    let contents = fs::read(path).expect("Could not read file");
-    serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize")
 }

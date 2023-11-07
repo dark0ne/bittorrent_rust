@@ -1,6 +1,6 @@
-use serde::{de::Visitor, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::Hashes;
+use crate::{Hashes, SingleHash};
 
 struct HashesVisitor;
 
@@ -42,11 +42,17 @@ impl Serialize for Hashes {
     where
         S: Serializer,
     {
-        let mut res = Vec::with_capacity(20 * self.data.len());
-        for e in &self.data {
-            res.extend_from_slice(e);
-        }
+        let res = self.data.concat();
 
         serializer.serialize_bytes(res.as_slice())
+    }
+}
+
+impl Serialize for SingleHash {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&urlencoding::encode_binary(&self.0))
     }
 }
