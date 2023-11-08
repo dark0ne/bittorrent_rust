@@ -1,6 +1,12 @@
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{Hashes, SingleHash};
+#[derive(Debug)]
+pub struct Hashes {
+    pub data: Vec<[u8; 20]>,
+}
+
+#[derive(Debug)]
+pub struct SingleHash([u8; 20]);
 
 struct HashesVisitor;
 

@@ -1,9 +1,12 @@
 use hex;
 use reqwest;
 use sha1::{Digest, Sha1};
-use std::{env, fs, path::Path, str::FromStr};
+use std::{env, fs, path::Path};
 
-mod serialize;
+mod hashes;
+mod tracker;
+
+use hashes::{Hashes, SingleHash};
 
 #[derive(Debug, serde::Deserialize)]
 struct Torrent {
@@ -25,11 +28,6 @@ struct Info {
     pieces: Hashes,
 }
 
-#[derive(Debug)]
-struct Hashes {
-    data: Vec<[u8; 20]>,
-}
-
 impl Info {
     pub fn calc_hash(&self) -> [u8; 20] {
         let info_ser = serde_bencode::to_bytes(self).expect("Could not serialize");
@@ -39,20 +37,6 @@ impl Info {
         info_hash.into()
     }
 }
-
-#[derive(Debug, serde::Serialize)]
-struct PeerRequest {
-    //#[serde(with = "serde_bytes")]
-    info_hash: SingleHash,
-    peer_id: String,
-    port: u32,
-    uploaded: usize,
-    downloaded: usize,
-    left: usize,
-    compact: u8,
-}
-#[derive(Debug)]
-struct SingleHash([u8; 20]);
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
 fn main() {
@@ -84,8 +68,8 @@ fn main() {
         }
     } else if command == "peers" {
         let torrent: Torrent = read_torrent(&args[2]);
-        let request = PeerRequest {
-            info_hash: SingleHash(torrent.info.calc_hash()),
+        let request = tracker::TrackerRequest {
+            //info_hash: SingleHash(torrent.info.calc_hash()),
             peer_id: "00112233445566778899".to_string(),
             port: 6881,
             uploaded: 0,
@@ -95,14 +79,16 @@ fn main() {
         };
         let params = serde_urlencoded::to_string(request).expect("url encode failed");
 
-        let full_url = format!("{}?{}", torrent.announce, params);
+        let full_url = format!(
+            "{}?info_hash={}&{}",
+            torrent.announce,
+            urlencoding::encode_binary(&torrent.info.calc_hash()),
+            params
+        );
 
-        let url = reqwest::Url::from_str(&full_url).unwrap();
-        //url.set_query(Some(params.as_str()));
+        println!("url: {}", full_url);
 
-        println!("url: {}", url);
-
-        //let response = reqwest::blocking::get(url)
+        //let response = reqwest::blocking::get(full_url)
         //    .expect("GET for peers failed")
         //    .text()
         //    .unwrap();
