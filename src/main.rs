@@ -1,3 +1,4 @@
+use anyhow::Error;
 use hex;
 use reqwest;
 use sha1::{Digest, Sha1};
@@ -39,7 +40,7 @@ impl Info {
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
-fn main() {
+fn main() -> Result<(), Error> {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
 
@@ -88,14 +89,16 @@ fn main() {
 
         println!("url: {}", full_url);
 
-        //let response = reqwest::blocking::get(full_url)
-        //    .expect("GET for peers failed")
-        //    .text()
-        //    .unwrap();
-        //println!("response: {}", response);
+        let response = reqwest::blocking::get(full_url)
+            .expect("GET for peers failed")
+            .text()
+            .unwrap();
+        println!("response: {}", response);
+        let response: tracker::TrackerResponse = serde_bencode::from_bytes(response.as_bytes())?;
     } else {
         println!("unknown command: {}", args[1])
     }
+    Ok(())
 }
 
 fn read_torrent<P>(path: P) -> Torrent
