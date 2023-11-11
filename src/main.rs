@@ -2,12 +2,19 @@ use anyhow::Error;
 use hex;
 use reqwest;
 use sha1::{Digest, Sha1};
-use std::{env, fs, path::Path};
+use std::{
+    env, fs,
+    io::{Read, Write},
+    mem::size_of,
+    net::{SocketAddrV4, TcpStream},
+    path::Path,
+};
 
 mod hashes;
+mod peer;
 mod tracker;
 
-use hashes::{Hashes, SingleHash};
+use hashes::Hashes;
 
 #[derive(Debug, serde::Deserialize)]
 struct Torrent {
@@ -15,8 +22,9 @@ struct Torrent {
 
     info: Info,
 }
+use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Info {
     length: usize,
 
@@ -38,6 +46,8 @@ impl Info {
         info_hash.into()
     }
 }
+
+const MY_PEER_ID: &str = "00112233445566778899";
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
 fn main() -> Result<(), Error> {
@@ -71,7 +81,7 @@ fn main() -> Result<(), Error> {
         let torrent: Torrent = read_torrent(&args[2]);
         let request = tracker::TrackerRequest {
             //info_hash: SingleHash(torrent.info.calc_hash()),
-            peer_id: "00112233445566778899".to_string(),
+            peer_id: MY_PEER_ID.to_string(),
             port: 6881,
             uploaded: 0,
             downloaded: 0,
@@ -87,14 +97,44 @@ fn main() -> Result<(), Error> {
             params
         );
 
-        println!("url: {}", full_url);
-
         let response = reqwest::blocking::get(full_url)
             .expect("GET for peers failed")
-            .text()
+            .bytes()
             .unwrap();
-        println!("response: {}", response);
-        let response: tracker::TrackerResponse = serde_bencode::from_bytes(response.as_bytes())?;
+        let response: tracker::TrackerResponse = serde_bencode::from_bytes(&*response)?;
+        match response {
+            tracker::TrackerResponse::Error { failure_reason } => {
+                println!("Peer request failed. Reason: {}", failure_reason)
+            }
+            tracker::TrackerResponse::Peers {
+                interval: _,
+                min_interval: _,
+                tracker_id: _,
+                complete: _,
+                incomplete: _,
+                peers,
+            } => {
+                for addr in peers {
+                    println!("{}:{}", addr.ip(), addr.port());
+                }
+            }
+        }
+    } else if command == "handshake" {
+        let torrent: Torrent = read_torrent(&args[2]);
+        let addr: SocketAddrV4 = args[3].parse()?;
+        let handshake = peer::Handshake::new(
+            torrent.info.calc_hash(),
+            MY_PEER_ID.as_bytes().to_owned().try_into().unwrap(),
+        );
+        let handshake_bytes = handshake.to_bytes();
+        let mut stream = TcpStream::connect(addr)?;
+        stream.write(&handshake_bytes.as_slice())?;
+
+        let mut handshake_bytes = vec![0; size_of::<peer::Handshake>()];
+        stream.read_exact(handshake_bytes.as_mut_slice())?;
+        let handshake = peer::Handshake::from_bytes(handshake_bytes.as_slice())
+            .ok_or(Error::msg("invalid size for handshake"))?;
+        println!("Peer ID: {}", hex::encode(handshake.peer_id));
     } else {
         println!("unknown command: {}", args[1])
     }
@@ -108,76 +148,6 @@ where
     let contents = fs::read(path).expect("Could not read file");
     serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize")
 }
-
-// Available if you need it!
-// use serde_bencode
-/*
-fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
-    let mut input_string = encoded_value;
-    if !input_string.is_empty() {
-        match input_string.chars().next().unwrap() {
-            '0'..='9' =>
-            // Strings are encoded as <length>:<contents>.
-            // Example: "5:hello" -> "hello"
-            {
-                if let Some((len, rest)) = input_string.split_once(':') {
-                    if let Ok(len) = len
-                        .parse::<usize>()
-                        .context("Failed to parse string length")
-                    {
-                        let (string, rest) = rest.split_at(len);
-                        return (string.into(), rest);
-                    }
-                }
-            }
-            'i' =>
-            // Integers are encoded as i<number>e
-            // Example: "i-5e" -> -5
-            {
-                if let Some((numb, rest)) = input_string[1..].split_once('e') {
-                    if let Ok(numb) = numb.parse::<i64>().context("Failed to parse integer") {
-                        return (numb.into(), rest);
-                    }
-                }
-            }
-            'l' =>
-            // Lists are encoded as l<bencoded_elements>e.
-            // Example: "l5:helloi52ee" -> ["hello", 52]
-            {
-                input_string = &input_string[1..];
-                let mut list = Vec::new();
-                while input_string.chars().next().unwrap() != 'e' {
-                    let (list_value, rest) = decode_bencoded_value(input_string);
-                    list.push(list_value);
-                    input_string = rest;
-                }
-                return (list.into(), &input_string[1..]);
-            }
-            'd' =>
-            //Dictionary is encoded as d<key1><value1>...<keyN><valueN>e.
-            // <key1>, <value1> etc. correspond to the bencoded keys & values.
-            // The keys are sorted in lexicographical order and must be strings
-            // Example: "d3:foo3:bar5:helloi52ee" -> {"hello": 52, "foo":"bar"}
-            {
-                input_string = &input_string[1..];
-                let mut dict = serde_json::Map::new();
-                while input_string.chars().next().unwrap() != 'e' {
-                    let (key, rest) = decode_bencoded_value(input_string);
-                    let (value, rest) = decode_bencoded_value(rest);
-                    if let Some(s) = key.as_str() {
-                        dict.insert(s.into(), value);
-                    }
-                    input_string = rest;
-                }
-                return (dict.into(), &input_string[1..]);
-            }
-
-            _ => {}
-        }
-    }
-    panic!("Unhandled encoded value: {}", encoded_value)
-}
- */
 
 fn bencode_to_serde(value: serde_bencode::value::Value) -> serde_json::Value {
     match value {

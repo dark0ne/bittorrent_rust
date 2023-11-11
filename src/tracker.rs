@@ -1,8 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{
-    collections::btree_map,
-    net::{Ipv4Addr, SocketAddrV4},
-};
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 #[derive(Debug, Serialize)]
 pub struct TrackerRequest {
@@ -27,7 +24,7 @@ pub enum TrackerResponse {
         #[serde(rename = "min interval")]
         min_interval: Option<usize>,
         #[serde(rename = "tracker id")]
-        tracker_id: String,
+        tracker_id: Option<String>,
         complete: usize,
         incomplete: usize,
         #[serde(deserialize_with = "deser_socket_addr")]
