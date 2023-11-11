@@ -63,10 +63,6 @@ fn main() -> Result<(), Error> {
     } else if command == "info" {
         let torrent: Torrent = read_torrent(&args[2]);
 
-        //        println!("{}", unsafe {
-        //            String::from_utf8_unchecked(info_ser.clone())
-        //        });
-
         let info_hash = torrent.info.calc_hash();
 
         println!("Tracker URL: {}", torrent.announce);
@@ -122,19 +118,27 @@ fn main() -> Result<(), Error> {
     } else if command == "handshake" {
         let torrent: Torrent = read_torrent(&args[2]);
         let addr: SocketAddrV4 = args[3].parse()?;
-        let handshake = peer::Handshake::new(
+        let my_handshake = peer::Handshake::new(
             torrent.info.calc_hash(),
             MY_PEER_ID.as_bytes().to_owned().try_into().unwrap(),
         );
-        let handshake_bytes = handshake.to_bytes();
         let mut stream = TcpStream::connect(addr)?;
-        stream.write(&handshake_bytes.as_slice())?;
+        {
+            let my_handshake_bytes = my_handshake.to_bytes();
+            stream.write_all(&my_handshake_bytes.as_slice())?;
+        }
 
-        let mut handshake_bytes = vec![0; size_of::<peer::Handshake>()];
-        stream.read_exact(handshake_bytes.as_mut_slice())?;
-        let handshake = peer::Handshake::from_bytes(handshake_bytes.as_slice())
-            .ok_or(Error::msg("invalid size for handshake"))?;
-        println!("Peer ID: {}", hex::encode(handshake.peer_id));
+        let peer_handshake = {
+            let mut peer_handshake_bytes = vec![0; size_of::<peer::Handshake>()];
+            stream.read_exact(peer_handshake_bytes.as_mut_slice())?;
+            peer::Handshake::from_bytes(peer_handshake_bytes.as_slice())
+                .ok_or(Error::msg("invalid size for handshake"))?
+        };
+        if my_handshake.info_hash != peer_handshake.info_hash {
+            return Err(Error::msg("info_has from the peer does not match."));
+        }
+
+        println!("Peer ID: {}", hex::encode(peer_handshake.peer_id));
     } else {
         println!("unknown command: {}", args[1])
     }
