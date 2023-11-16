@@ -1,15 +1,17 @@
 use anyhow::Error;
 use clap::Parser;
+use futures::{sink::SinkExt, stream::StreamExt};
 use hex;
 use reqwest;
 use sha1::{Digest, Sha1};
 use std::{
-    env, fs,
+    fs,
     io::{Read, Write},
     mem::size_of,
-    net::{SocketAddrV4, TcpStream},
+    net::TcpStream,
     path::Path,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod args;
 mod hashes;
@@ -50,9 +52,11 @@ impl Info {
 }
 
 const MY_PEER_ID: &str = "00112233445566778899";
+const BLOCK_SIZE: usize = 1 << 14;
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let args = args::Args::parse();
     match args.command {
         args::Commands::Decode { input } => {
@@ -146,7 +150,120 @@ fn main() -> Result<(), Error> {
             output_file,
             torrent,
             index,
-        } => todo!(),
+        } => {
+            let torrent: Torrent = read_torrent(torrent);
+            let request = tracker::TrackerRequest {
+                //info_hash: SingleHash(torrent.info.calc_hash()),
+                peer_id: MY_PEER_ID.to_string(),
+                port: 6881,
+                uploaded: 0,
+                downloaded: 0,
+                left: torrent.info.length,
+                compact: 1,
+            };
+            let params = serde_urlencoded::to_string(request).expect("url encode failed");
+
+            let full_url = format!(
+                "{}?info_hash={}&{}",
+                torrent.announce,
+                urlencoding::encode_binary(&torrent.info.calc_hash()),
+                params
+            );
+
+            let response = reqwest::get(full_url)
+                .await
+                .expect("GET for peers failed")
+                .bytes()
+                .await
+                .unwrap();
+            let response: tracker::TrackerResponse = serde_bencode::from_bytes(&*response)?;
+            let peers = match response {
+                tracker::TrackerResponse::Error { failure_reason } => Err(Error::msg(format!(
+                    "Peer request failed. Reason: {}",
+                    failure_reason
+                ))),
+                tracker::TrackerResponse::Peers {
+                    interval: _,
+                    min_interval: _,
+                    tracker_id: _,
+                    complete: _,
+                    incomplete: _,
+                    peers,
+                } => Ok(peers),
+            }?;
+            let peer_address = peers[0];
+            let my_handshake = peer::Handshake::new(
+                torrent.info.calc_hash(),
+                MY_PEER_ID.as_bytes().to_owned().try_into().unwrap(),
+            );
+            let mut stream = tokio::net::TcpStream::connect(peer_address).await?;
+            {
+                let my_handshake_bytes = my_handshake.to_bytes();
+                stream.write_all(&my_handshake_bytes.as_slice()).await?;
+            }
+
+            let peer_handshake = {
+                let mut peer_handshake_bytes = vec![0; size_of::<peer::Handshake>()];
+                stream
+                    .read_exact(peer_handshake_bytes.as_mut_slice())
+                    .await?;
+                peer::Handshake::from_bytes(peer_handshake_bytes.as_slice())
+                    .ok_or(Error::msg("invalid size for handshake"))?
+            };
+            if my_handshake.info_hash != peer_handshake.info_hash {
+                return Err(Error::msg("info_has from the peer does not match."));
+            }
+
+            let mut stream = tokio_util::codec::Framed::new(stream, peer::MessageFramer);
+
+            // 1. step: wait for Bitfield message
+            let next_msg = stream
+                .next()
+                .await
+                .expect("expecting messages")
+                .expect("should be a valid message");
+            println!("Received message is {:?}", next_msg.tag);
+
+            if next_msg.tag != peer::MessageTag::Bitfield {
+                return Err(Error::msg(format!(
+                    "Unexpected message type: Expected Bitfield, got {:?}",
+                    next_msg.tag
+                )));
+            }
+            // 2. step: send Interested message.
+            stream
+                .send(peer::RawMessage {
+                    tag: peer::MessageTag::Interested,
+                    payload: vec![],
+                })
+                .await?;
+            // 3. step: wait for the Unchoke message.
+            let next_msg = stream
+                .next()
+                .await
+                .expect("expecting messages")
+                .expect("should be a valid message");
+            println!("Received message is {:?}", next_msg.tag);
+
+            if next_msg.tag != peer::MessageTag::Unchoke {
+                return Err(Error::msg(format!(
+                    "Unexpected message type: Expected Unchoke, got {:?}",
+                    next_msg.tag
+                )));
+            }
+
+            let requested_piece_size = if index == torrent.info.pieces.data.len() - 1 {
+                torrent.info.length % torrent.info.piece_length
+            } else {
+                torrent.info.piece_length
+            };
+
+            let nr_of_blocks = requested_piece_size.div_ceil(BLOCK_SIZE);
+            assert!(nr_of_blocks > 1);
+
+            // todo download all blocks. Now only the first.
+            let block_nr = 0;
+        }
     }
     Ok(())
 }
