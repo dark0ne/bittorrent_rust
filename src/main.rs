@@ -1,6 +1,6 @@
 use anyhow::Error;
 use clap::Parser;
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures::{executor::block_on, sink::SinkExt, stream::StreamExt};
 use hex;
 use reqwest;
 use sha1::{Digest, Sha1};
@@ -222,47 +222,106 @@ async fn main() -> Result<(), Error> {
                 .await
                 .expect("expecting messages")
                 .expect("should be a valid message");
-            println!("Received message is {:?}", next_msg.tag);
+            println!("Received message is {:?}", next_msg);
 
-            if next_msg.tag != peer::MessageTag::Bitfield {
-                return Err(Error::msg(format!(
-                    "Unexpected message type: Expected Bitfield, got {:?}",
-                    next_msg.tag
-                )));
+            match next_msg {
+                peer::Message::Bitfield(_) => {}
+                _ => {
+                    return Err(Error::msg(format!(
+                        "Unexpected message type: Expected Bitfield, got {:?}",
+                        next_msg
+                    )))
+                }
             }
             // 2. step: send Interested message.
-            stream
-                .send(peer::RawMessage {
-                    tag: peer::MessageTag::Interested,
-                    payload: vec![],
-                })
-                .await?;
+            stream.send(peer::Message::Interested).await?;
             // 3. step: wait for the Unchoke message.
             let next_msg = stream
                 .next()
                 .await
                 .expect("expecting messages")
                 .expect("should be a valid message");
-            println!("Received message is {:?}", next_msg.tag);
+            println!("Received message is {:?}", next_msg);
 
-            if next_msg.tag != peer::MessageTag::Unchoke {
-                return Err(Error::msg(format!(
-                    "Unexpected message type: Expected Unchoke, got {:?}",
-                    next_msg.tag
-                )));
+            match next_msg {
+                peer::Message::Unchoke => {}
+                _ => {
+                    return Err(Error::msg(format!(
+                        "Unexpected message type: Expected Unchoke, got {:?}",
+                        next_msg
+                    )))
+                }
             }
 
+            // 4. step: send request for a block
             let requested_piece_size = if index == torrent.info.pieces.data.len() - 1 {
                 torrent.info.length % torrent.info.piece_length
             } else {
                 torrent.info.piece_length
             };
 
+            println!("requested piece size = {}", requested_piece_size);
+
             let nr_of_blocks = requested_piece_size.div_ceil(BLOCK_SIZE);
             assert!(nr_of_blocks > 1);
 
-            // todo download all blocks. Now only the first.
-            let block_nr = 0;
+            let mut piece_data: Vec<Vec<u8>> = vec![Vec::new(); nr_of_blocks];
+
+            for block_nr in 0..nr_of_blocks {
+                let cur_block_size = if requested_piece_size % BLOCK_SIZE == 0 {
+                    BLOCK_SIZE
+                } else if block_nr == nr_of_blocks - 1 {
+                    requested_piece_size % BLOCK_SIZE
+                } else {
+                    BLOCK_SIZE
+                };
+                println!(
+                    "requested begin={}, len={}",
+                    (block_nr * BLOCK_SIZE),
+                    cur_block_size
+                );
+                let request = peer::Message::Request {
+                    index: index as u32,
+                    begin: (block_nr * BLOCK_SIZE) as u32,
+                    length: cur_block_size as u32,
+                };
+                stream.send(request).await?;
+
+                // 4. step: receive piece message
+                let block = stream
+                    .next()
+                    .await
+                    .expect("expecting piece message")
+                    .expect("should be a valid message");
+                let (received_index, begin, data) = match block {
+                    peer::Message::Piece {
+                        index,
+                        begin,
+                        block,
+                    } => (index, begin, block),
+                    _ => {
+                        return Err(Error::msg(format!(
+                            "Unexpected message type: Expected Piece, got {:?}",
+                            next_msg
+                        )))
+                    }
+                };
+                assert!(index == received_index as usize);
+                assert!(begin as usize % BLOCK_SIZE == 0);
+                assert!(data.len() == cur_block_size);
+                let block_index = begin as usize / BLOCK_SIZE;
+                piece_data[block_index] = data;
+            }
+            let mut hasher = Sha1::new();
+            for block in piece_data {
+                hasher.update(block);
+            }
+            let piece_hash = hasher.finalize();
+            println!(
+                "torrent hash: {}",
+                hex::encode(torrent.info.pieces.data[index])
+            );
+            println!("received hash: {}", hex::encode(piece_hash));
         }
     }
     Ok(())

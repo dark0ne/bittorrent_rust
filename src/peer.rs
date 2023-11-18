@@ -73,6 +73,7 @@ pub struct RawMessage {
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug)]
 pub enum Message {
     Choke,
     Unchoke,
@@ -256,10 +257,11 @@ pub struct MessageFramer;
 
 const MAX_SIZE: usize = 1 << 15;
 
-impl Encoder<RawMessage> for MessageFramer {
+impl Encoder<Message> for MessageFramer {
     type Error = std::io::Error;
 
-    fn encode(&mut self, item: RawMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let item: RawMessage = item.into();
         let full_size = item.payload.len() + 1;
         // Don't send a message if it is longer than the other end will
         // accept.
@@ -286,7 +288,7 @@ impl Encoder<RawMessage> for MessageFramer {
 }
 
 impl Decoder for MessageFramer {
-    type Item = RawMessage;
+    type Item = Message;
     type Error = std::io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -333,6 +335,7 @@ impl Decoder for MessageFramer {
                 format!("Message tag {} is invalid.", tag),
             )
         })?;
-        Ok(Some(RawMessage { tag, payload: data }))
+        let message = RawMessage { tag, payload: data }.try_into()?;
+        Ok(Some(message))
     }
 }
