@@ -2,6 +2,7 @@ use anyhow::Error;
 use clap::Parser;
 use futures::{executor::block_on, sink::SinkExt, stream::StreamExt};
 use hex;
+use rand::{seq::SliceRandom, thread_rng};
 use reqwest;
 use sha1::{Digest, Sha1};
 use std::{
@@ -191,17 +192,22 @@ async fn main() -> Result<(), Error> {
                     peers,
                 } => Ok(peers),
             }?;
-            let peer_address = peers[0];
+            let peer_address = peers
+                .choose(&mut thread_rng())
+                .expect("List of peers should not be empty.");
             let my_handshake = peer::Handshake::new(
                 torrent.info.calc_hash(),
                 MY_PEER_ID.as_bytes().to_owned().try_into().unwrap(),
             );
+            println!("Connecting to the peer {}", peer_address);
             let mut stream = tokio::net::TcpStream::connect(peer_address).await?;
+            println!("Sending handshake.");
             {
                 let my_handshake_bytes = my_handshake.to_bytes();
                 stream.write_all(&my_handshake_bytes.as_slice()).await?;
             }
 
+            println!("Receiving handshake.");
             let peer_handshake = {
                 let mut peer_handshake_bytes = vec![0; size_of::<peer::Handshake>()];
                 stream
@@ -217,6 +223,7 @@ async fn main() -> Result<(), Error> {
             let mut stream = tokio_util::codec::Framed::new(stream, peer::MessageFramer);
 
             // 1. step: wait for Bitfield message
+            println!("Waiting for Bitfield message.");
             let next_msg = stream
                 .next()
                 .await
@@ -234,8 +241,10 @@ async fn main() -> Result<(), Error> {
                 }
             }
             // 2. step: send Interested message.
+            println!("Sending Interested message.");
             stream.send(peer::Message::Interested).await?;
             // 3. step: wait for the Unchoke message.
+            println!("Waiting for Unchoke message.");
             let next_msg = stream
                 .next()
                 .await
@@ -253,7 +262,7 @@ async fn main() -> Result<(), Error> {
                 }
             }
 
-            // 4. step: send request for a block
+            // 4. step: send request for all blocks
             let requested_piece_size = if index == torrent.info.pieces.data.len() - 1 {
                 torrent.info.length % torrent.info.piece_length
             } else {
@@ -268,23 +277,24 @@ async fn main() -> Result<(), Error> {
             let mut piece_data: Vec<Vec<u8>> = vec![Vec::new(); nr_of_blocks];
 
             for block_nr in 0..nr_of_blocks {
-                let cur_block_size = if requested_piece_size % BLOCK_SIZE == 0 {
+                let cur_block_size = if block_nr != nr_of_blocks - 1 {
+                    // not last block, always of block size.
                     BLOCK_SIZE
-                } else if block_nr == nr_of_blocks - 1 {
-                    requested_piece_size % BLOCK_SIZE
+                } else if requested_piece_size % BLOCK_SIZE == 0 {
+                    BLOCK_SIZE
                 } else {
-                    BLOCK_SIZE
+                    // last block and piece if not multiple of block size.
+                    requested_piece_size % BLOCK_SIZE
                 };
-                println!(
-                    "requested begin={}, len={}",
-                    (block_nr * BLOCK_SIZE),
-                    cur_block_size
-                );
+                println!("Sending Request message: index: {}", index);
+                println!("                         block: {}", block_nr);
+                println!("                         len:   {}", cur_block_size);
                 let request = peer::Message::Request {
                     index: index as u32,
                     begin: (block_nr * BLOCK_SIZE) as u32,
                     length: cur_block_size as u32,
                 };
+
                 stream.send(request).await?;
 
                 // 4. step: receive piece message
@@ -310,6 +320,8 @@ async fn main() -> Result<(), Error> {
                 assert!(begin as usize % BLOCK_SIZE == 0);
                 assert!(data.len() == cur_block_size);
                 let block_index = begin as usize / BLOCK_SIZE;
+                println!("Block received: index: {}", index);
+                println!("                block: {}", block_index);
                 piece_data[block_index] = data;
             }
             let mut hasher = Sha1::new();
@@ -318,7 +330,7 @@ async fn main() -> Result<(), Error> {
             }
             let piece_hash = hasher.finalize();
             println!(
-                "torrent hash: {}",
+                "torrent hash:  {}",
                 hex::encode(torrent.info.pieces.data[index])
             );
             println!("received hash: {}", hex::encode(piece_hash));
