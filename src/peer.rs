@@ -339,3 +339,21 @@ impl Decoder for MessageFramer {
         Ok(Some(message))
     }
 }
+
+struct PeerState {
+    am_interested: bool,
+    am_choked: bool,
+    peer_interested: bool,
+    peer_choked: bool,
+}
+
+impl PeerState {
+    fn new() -> Self {
+        PeerState {
+            am_interested: false,
+            am_choked: true,
+            peer_interested: false,
+            peer_choked: true,
+        }
+    }
+}

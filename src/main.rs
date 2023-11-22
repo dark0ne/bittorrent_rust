@@ -1,17 +1,11 @@
 use anyhow::Error;
 use clap::Parser;
-use futures::{executor::block_on, sink::SinkExt, stream::StreamExt};
+use futures::{sink::SinkExt, stream::StreamExt};
 use hex;
 use rand::{seq::SliceRandom, thread_rng};
 use reqwest;
 use sha1::{Digest, Sha1};
-use std::{
-    fs,
-    io::{Read, Write},
-    mem::size_of,
-    net::TcpStream,
-    path::Path,
-};
+use std::{fs, mem::size_of, path::Path};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod args;
@@ -38,7 +32,6 @@ struct Info {
     #[serde(rename = "piece length")]
     piece_length: usize,
 
-    //#[serde(with = "serde_bytes")]
     pieces: Hashes,
 }
 
@@ -55,103 +48,15 @@ impl Info {
 const MY_PEER_ID: &str = "00112233445566778899";
 const BLOCK_SIZE: usize = 1 << 14;
 
-// Usage: your_bittorrent.sh decode "<encoded_value>"
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = args::Args::parse();
     match args.command {
-        args::Commands::Decode { input } => {
-            //let decoded_value = decode_bencoded_value(encoded_value);
-            let decoded_value =
-                serde_bencode::from_str(&input).expect("cannot decode bencoded string");
-            println!("{}", bencode_to_serde(decoded_value).to_string());
-        }
-        args::Commands::Info { torrent } => {
-            let torrent: Torrent = read_torrent(torrent);
-            let info_hash = torrent.info.calc_hash();
-
-            println!("Tracker URL: {}", torrent.announce);
-            println!("Length: {}", torrent.info.length);
-            println!("Info Hash: {}", hex::encode(info_hash));
-            println!("Piece Length: {}", torrent.info.piece_length);
-            println!("Piece Hashes:");
-            for h in torrent.info.pieces.data {
-                println!("{}", hex::encode(h));
-            }
-        }
-        args::Commands::Peers { torrent } => {
-            let torrent: Torrent = read_torrent(torrent);
-            let request = tracker::TrackerRequest {
-                //info_hash: SingleHash(torrent.info.calc_hash()),
-                peer_id: MY_PEER_ID.to_string(),
-                port: 6881,
-                uploaded: 0,
-                downloaded: 0,
-                left: torrent.info.length,
-                compact: 1,
-            };
-            let params = serde_urlencoded::to_string(request).expect("url encode failed");
-
-            let full_url = format!(
-                "{}?info_hash={}&{}",
-                torrent.announce,
-                urlencoding::encode_binary(&torrent.info.calc_hash()),
-                params
-            );
-
-            let response = reqwest::blocking::get(full_url)
-                .expect("GET for peers failed")
-                .bytes()
-                .unwrap();
-            let response: tracker::TrackerResponse = serde_bencode::from_bytes(&*response)?;
-            match response {
-                tracker::TrackerResponse::Error { failure_reason } => {
-                    println!("Peer request failed. Reason: {}", failure_reason)
-                }
-                tracker::TrackerResponse::Peers {
-                    interval: _,
-                    min_interval: _,
-                    tracker_id: _,
-                    complete: _,
-                    incomplete: _,
-                    peers,
-                } => {
-                    for addr in peers {
-                        println!("{}:{}", addr.ip(), addr.port());
-                    }
-                }
-            }
-        }
-        args::Commands::Handshake { torrent, address } => {
-            let torrent: Torrent = read_torrent(torrent);
-            //let addr: SocketAddrV4 = args[3].parse()?;
-            let my_handshake = peer::Handshake::new(
-                torrent.info.calc_hash(),
-                MY_PEER_ID.as_bytes().to_owned().try_into().unwrap(),
-            );
-            let mut stream = TcpStream::connect(address)?;
-            {
-                let my_handshake_bytes = my_handshake.to_bytes();
-                stream.write_all(&my_handshake_bytes.as_slice())?;
-            }
-
-            let peer_handshake = {
-                let mut peer_handshake_bytes = vec![0; size_of::<peer::Handshake>()];
-                stream.read_exact(peer_handshake_bytes.as_mut_slice())?;
-                peer::Handshake::from_bytes(peer_handshake_bytes.as_slice())
-                    .ok_or(Error::msg("invalid size for handshake"))?
-            };
-            if my_handshake.info_hash != peer_handshake.info_hash {
-                return Err(Error::msg("info_has from the peer does not match."));
-            }
-
-            println!("Peer ID: {}", hex::encode(peer_handshake.peer_id));
-        }
-        args::Commands::DownloadPiece {
+        args::Commands::Download {
             output_file,
             torrent,
-            index,
         } => {
+            let index = 0;
             let torrent: Torrent = read_torrent(torrent);
             let request = tracker::TrackerRequest {
                 //info_hash: SingleHash(torrent.info.calc_hash()),
@@ -195,31 +100,41 @@ async fn main() -> Result<(), Error> {
             let peer_address = peers
                 .choose(&mut thread_rng())
                 .expect("List of peers should not be empty.");
-            let my_handshake = peer::Handshake::new(
-                torrent.info.calc_hash(),
-                MY_PEER_ID.as_bytes().to_owned().try_into().unwrap(),
-            );
-            println!("Connecting to the peer {}", peer_address);
-            let mut stream = tokio::net::TcpStream::connect(peer_address).await?;
-            println!("Sending handshake.");
-            {
-                let my_handshake_bytes = my_handshake.to_bytes();
-                stream.write_all(&my_handshake_bytes.as_slice()).await?;
-            }
+            let my_peer_id = MY_PEER_ID.as_bytes().to_owned().try_into().unwrap();
+            let info_hash = torrent.info.calc_hash();
 
-            println!("Receiving handshake.");
-            let peer_handshake = {
-                let mut peer_handshake_bytes = vec![0; size_of::<peer::Handshake>()];
-                stream
-                    .read_exact(peer_handshake_bytes.as_mut_slice())
-                    .await?;
-                peer::Handshake::from_bytes(peer_handshake_bytes.as_slice())
-                    .ok_or(Error::msg("invalid size for handshake"))?
-            };
-            if my_handshake.info_hash != peer_handshake.info_hash {
-                return Err(Error::msg("info_has from the peer does not match."));
-            }
+            let mut streams = futures::stream::iter(peers.iter())
+                .map(|address| async move {
+                    let my_handshake = peer::Handshake::new(info_hash, my_peer_id);
+                    println!("Connecting to the peer. Address = {}", address);
+                    let mut stream = tokio::net::TcpStream::connect(address).await?;
+                    println!("Sending handshake. Address = {}", address);
+                    {
+                        let my_handshake_bytes = my_handshake.to_bytes();
+                        stream.write_all(&my_handshake_bytes.as_slice()).await?;
+                    }
 
+                    println!("Receiving handshake. Address = {}", address);
+                    let peer_handshake = {
+                        let mut peer_handshake_bytes = vec![0; size_of::<peer::Handshake>()];
+                        stream
+                            .read_exact(peer_handshake_bytes.as_mut_slice())
+                            .await?;
+                        peer::Handshake::from_bytes(peer_handshake_bytes.as_slice())
+                            .ok_or(Error::msg("Invalid size for handshake"))?
+                    };
+                    if my_handshake.info_hash != peer_handshake.info_hash {
+                        return Err(Error::msg("info_hash from the peer does not match."));
+                    }
+                    Ok(stream)
+                })
+                .buffer_unordered(5)
+                .collect::<Vec<Result<tokio::net::TcpStream, Error>>>()
+                .await;
+
+            let stream = streams[0].as_mut().unwrap();
+
+            /*
             let mut stream = tokio_util::codec::Framed::new(stream, peer::MessageFramer);
 
             // 1. step: wait for Bitfield message
@@ -334,6 +249,8 @@ async fn main() -> Result<(), Error> {
                 hex::encode(torrent.info.pieces.data[index])
             );
             println!("received hash: {}", hex::encode(piece_hash));
+
+            */
         }
     }
     Ok(())
@@ -345,28 +262,4 @@ where
 {
     let contents = fs::read(path).expect("Could not read file");
     serde_bencode::from_bytes(contents.as_slice()).expect("Could not deserialize")
-}
-
-fn bencode_to_serde(value: serde_bencode::value::Value) -> serde_json::Value {
-    match value {
-        serde_bencode::value::Value::Bytes(bytes) => {
-            serde_json::Value::String(String::from_utf8_lossy(bytes.as_slice()).to_string())
-        }
-        serde_bencode::value::Value::Int(int) => {
-            serde_json::Value::Number(serde_json::value::Number::from(int))
-        }
-        serde_bencode::value::Value::List(list) => {
-            serde_json::Value::Array(list.into_iter().map(|el| bencode_to_serde(el)).collect())
-        }
-        serde_bencode::value::Value::Dict(dict) => serde_json::Value::Object(
-            dict.into_iter()
-                .map(|el| {
-                    (
-                        String::from_utf8_lossy(el.0.as_slice()).to_string(),
-                        bencode_to_serde(el.1),
-                    )
-                })
-                .collect(),
-        ),
-    }
 }
